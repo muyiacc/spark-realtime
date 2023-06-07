@@ -74,8 +74,6 @@ object OdsBaseLogApp {
     val DWD_START_LOG_TOPIC : String = "DWD_START_LOG_TOPIC" //启动数据
     val DWD_ERROR_LOG_TOPIC : String = "DWD_ERROR_LOG_TOPIC" //错误数据
 
-    // 分流规则
-    //  页面数据
 
 
     ssc.start()
