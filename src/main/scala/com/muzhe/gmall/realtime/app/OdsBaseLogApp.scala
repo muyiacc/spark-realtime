@@ -1,11 +1,15 @@
 package com.muzhe.gmall.realtime.app
 
-import com.alibaba.fastjson.JSON
 import com.muzhe.gmall.realtime.util.MyKafkaUtils
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.spark.SparkConf
 import org.apache.spark.streaming.dstream.InputDStream
 import org.apache.spark.streaming.{Seconds, StreamingContext}
+import com.alibaba.fastjson.JSON
+import com.alibaba.fastjson.serializer.SerializeConfig
+
+import com.muzhe.gmall.realtime.bean._
+
 
 /**
  * @Author muyiacc
@@ -54,7 +58,7 @@ object OdsBaseLogApp {
         jsonObj
       }
     )
-    jsonObjDStream.print(100)
+//    jsonObjDStream.print(100)
 
     // 3.2 分流
     //  日志数据
@@ -74,7 +78,125 @@ object OdsBaseLogApp {
     val DWD_START_LOG_TOPIC : String = "DWD_START_LOG_TOPIC" //启动数据
     val DWD_ERROR_LOG_TOPIC : String = "DWD_ERROR_LOG_TOPIC" //错误数据
 
+    // 分流规则
+    //  页面数据：拆分成页面 访问，曝光，事件 分别发送到对应的topic
+    //  启动数据：整条数据发送到对应的topic
+    //  错误数据：只要包含错误字段，整条发送到对应的topic
 
+    // 发送数据 - 使用行动算子
+    jsonObjDStream.foreachRDD(
+      rdd => {
+        rdd.foreach(
+          jsonObj => {
+            // 分流过程
+            // 分流错误数据
+            val errObj = jsonObj.getJSONObject("err")
+            if (errObj != null){
+              // 将错误数据发送到 DWD_ERROR_LOG_TOPIC
+              MyKafkaUtils.send(DWD_ERROR_LOG_TOPIC, errObj.toJSONString)
+            } else {
+              // 提取公共字段
+              val commonObj = jsonObj.getJSONObject("common")
+              val ar = commonObj.getString("ar")
+              val uid = commonObj.getString("uid")
+              val os = commonObj.getString("os")
+              val ch = commonObj.getString("ch")
+              val isNew = commonObj.getString("is_new")
+              val md = commonObj.getString("md")
+              val mid = commonObj.getString("mid")
+              val vc = commonObj.getString("vc")
+              val ba = commonObj.getString("ba")
+              // 提取时间戳
+              val ts = jsonObj.getLong("ts")
+
+              // 页面数据
+              val pageObj = jsonObj.getJSONObject("page")
+              if (pageObj != null){
+                // 提取page字段
+                val pageId = pageObj.getString("page_id")
+                val pageItem = pageObj.getString("item")
+                val pageItemType = pageObj.getString("item_type")
+                val duringTime = pageObj.getLong("during_time")
+                val lastPageId = pageObj.getString("last_page_id")
+                val sourceType = pageObj.getString("source_type")
+
+                // 把页面数据封装成bean对象
+                val pageLog = PageLog(mid, uid, ar, ch, isNew, md, os, vc, ba, pageId,
+                  lastPageId, pageItem, pageItemType, sourceType, duringTime, ts)
+
+                // 发送到 DWD_PAGE_LOG_TOPIC
+                // 注意：JSON.toJSONString封装pageLog时，需要传入第二个参数，表示直接使用字段，否则将从get,set方法找，
+                // scala的样例类并没有get,set方法，故此采用此方法解决该问题
+                MyKafkaUtils.send(DWD_PAGE_LOG_TOPIC, JSON.toJSONString(pageLog, new SerializeConfig(true)))
+
+                // 因为曝光和事件都是在页面中才有可能提取到，所以在这里提取它们
+                // 提取曝光数据
+                val displaysJsonArr = jsonObj.getJSONArray("displays")
+                // 判断曝光是否有数据
+                if (displaysJsonArr != null && displaysJsonArr.size() > 0){
+                  for (i <- 0 until displaysJsonArr.size()) {
+                    // 提取曝光字段
+                    val displayObj = displaysJsonArr.getJSONObject(i)
+                    val displayType = displayObj.getString("display_type")
+                    val displayItem = displayObj.getString("item")
+                    val displayItemType = displayObj.getString("item_type")
+                    val displayPosId = displayObj.getLong("pos_id")
+                    val displayOrder = displayObj.getLong("order")
+
+                    // 封装成对象以便发送
+                    val pageDisplayLog = PageDisplayLog(mid, uid, ar, ch, isNew, md, os, vc, ba, pageId,
+                      lastPageId, pageItem, pageItemType, sourceType, duringTime, displayType, displayItem,
+                      displayItemType, displayOrder, displayPosId ,ts)
+
+                    // 发送数据到 DWD_PAGE_DISPLAY_TOPIC
+                    MyKafkaUtils.send(DWD_PAGE_DISPLAY_TOPIC, JSON.toJSONString(pageDisplayLog, new SerializeConfig(true)))
+                  }
+                }
+
+                // 提取事件数据 操作类似 displays
+                val actionsJsonArr = jsonObj.getJSONArray("actions")
+                if (actionsJsonArr != null && actionsJsonArr.size() > 0 ){
+                  for (i <- 0 until actionsJsonArr.size()) {
+                    val actionObj = actionsJsonArr.getJSONObject(i)
+                    val actionItem = actionObj.getString("item")
+                    val actionId = actionObj.getString("action_id")
+                    val actionItemType = actionObj.getString("item_type")
+                    val actionTs = actionObj.getLong("ts")
+
+                    // 封装成对象
+                    val pageActionLog = PageActionLog(mid, uid, ar, ch, isNew, md, os, vc, ba, pageId,
+                      lastPageId, pageItem, pageItemType, sourceType, duringTime, actionId, actionItem,
+                      actionItemType, ts)
+
+                    // 发送数据到  DWD_PAGE_ACTION_TOPIC
+                    MyKafkaUtils.send(DWD_PAGE_ACTION_TOPIC, JSON.toJSONString(pageActionLog, new SerializeConfig(true)))
+                  }
+                }
+              }
+
+              // 启动数据
+              val startObj = jsonObj.getJSONObject("start")
+              if (startObj != null && startObj.size() > 0) {
+                val entry = startObj.getString("entry")
+                val openAdSkipMs = startObj.getLong("open_ad_skip_ms")
+                val openAdMs = startObj.getLong("open_ad_ms")
+                val loadingTime = startObj.getLong("loading_time")
+                val openAdId = startObj.getLong("open_ad_id")
+
+                // 封装
+                val startLog = StartLog(uid, ar, ch, isNew, md, os, vc, entry, openAdId,
+                  loadingTime, openAdMs, openAdSkipMs, ts)
+
+                // 发送到 DWD_START_LOG_TOPIC
+                MyKafkaUtils.send(DWD_START_LOG_TOPIC, JSON.toJSONString(startLog, new SerializeConfig(true)))
+
+              }
+
+            }
+          }
+        )
+      }
+    )
 
     ssc.start()
     ssc.awaitTermination()
