@@ -15,5 +15,7 @@ object MyConfig {
   val KAFKA_KEY_STRINGDESERIALIZER = "kafka.key.stringdeserializer"
   val KAFKA_VALUE_STRINGDESERIALIZER = "kafka.value.stringdeserializer"
 
-
+  // redis
+  val REDIS_HOST = "redis.host"
+  val REDIS_PORT = "redis.port"
 }
